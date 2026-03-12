@@ -31,11 +31,15 @@ logger = setup_logging(log_level="INFO")
 
 # OPIK monitoring (optional - gracefully handles if not configured)
 try:
-    from opik import track
-    OPIK_AVAILABLE = True
+    if settings.OPIK_API_KEY:
+        from opik import track
+        OPIK_AVAILABLE = True
+    else:
+        OPIK_AVAILABLE = False
+        raise ImportError("OPIK_API_KEY not configured")
 except ImportError:
     OPIK_AVAILABLE = False
-    # Create a no-op decorator if OPIK is not installed
+    # Create a no-op decorator if OPIK is not installed or key is missing
     def track(name=None, **kwargs):
         def decorator(func):
             return func
@@ -215,6 +219,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     try:
         # Save uploaded file
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         file_path = UPLOAD_DIR / file.filename
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -495,13 +500,14 @@ async def list_documents():
     """
     try:
         documents = []
-        for file_path in UPLOAD_DIR.iterdir():
-            if file_path.is_file() and not file_path.name.startswith('.'):
-                documents.append({
-                    "filename": file_path.name,
-                    "size_bytes": file_path.stat().st_size,
-                    "uploaded_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
-                })
+        if UPLOAD_DIR.exists():
+            for file_path in UPLOAD_DIR.iterdir():
+                if file_path.is_file() and not file_path.name.startswith('.'):
+                    documents.append({
+                        "filename": file_path.name,
+                        "size_bytes": file_path.stat().st_size,
+                        "uploaded_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
+                    })
 
         return {
             "total_documents": len(documents),
@@ -529,14 +535,15 @@ async def get_stats():
         documents = []
         total_size = 0
 
-        for file_path in UPLOAD_DIR.iterdir():
-            if file_path.is_file() and not file_path.name.startswith('.'):
-                file_size = file_path.stat().st_size
-                documents.append({
-                    "filename": file_path.name,
-                    "size_bytes": file_size,
-                })
-                total_size += file_size
+        if UPLOAD_DIR.exists():
+            for file_path in UPLOAD_DIR.iterdir():
+                if file_path.is_file() and not file_path.name.startswith('.'):
+                    file_size = file_path.stat().st_size
+                    documents.append({
+                        "filename": file_path.name,
+                        "size_bytes": file_size,
+                    })
+                    total_size += file_size
 
         # Get pending SQL queries count
         pending_sql_count = 0
@@ -1245,11 +1252,12 @@ def initialize_services():
 # Event handlers for startup/shutdown
 # NOTE: Startup event disabled for Lambda (initialization handled in lambda_handler.py)
 # Uncomment for local development with uvicorn
-# @app.on_event("startup")
-# async def startup_event():
-#     """Execute tasks on application startup."""
-#     initialize_services()
-
+@app.on_event("startup")
+async def startup_event():
+    """Execute tasks on application startup."""
+    import os
+    if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        initialize_services()
 
 @app.on_event("shutdown")
 async def shutdown_event():
